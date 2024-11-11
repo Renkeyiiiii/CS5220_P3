@@ -8,7 +8,7 @@
 
 
 # Compile the GPU version
-make gpu
+make basic_serial
 
 # Run the program (example with some parameters)
-srun ./build/gpu --nx 256 --ny 256 --scenario water_drop --num_iter 1000 --output serial.out
+srun ./build/basic_serial --nx 256 --ny 256 --scenario water_drop --num_iter 1000 --output serial.out
