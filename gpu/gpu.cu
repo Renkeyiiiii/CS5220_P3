@@ -29,7 +29,8 @@ double *d_h, *d_u, *d_v;           // Current fields
 double *d_dh, *d_du, *d_dv;        // Current derivatives
 double *d_dh1, *d_du1, *d_dv1;     // Previous derivatives
 double *d_dh2, *d_du2, *d_dv2;     // Two steps ago derivatives
-
+// Define index calculation macro for 2D array
+#define IDX(i,j) ((i) + (j) * nx)
 // Constants remain the same as CPU version
 int nx, ny;
 double H, g, dx, dy, dt;
