@@ -1,13 +1,17 @@
 #!/bin/bash
-#SBATCH -A m4776            
-#SBATCH --qos=shared
-#SBATCH -t 00:10:00        # Request 10 minutes
-#SBATCH -N 1               # Request 1 node
-#SBATCH -n 1               # Request 1 task
-#SBATCH -c 32              # CPU cores per task
+#SBATCH -J sph
+#SBATCH -o sph_%j.out
+#SBATCH -e sph_%j.err
+#SBATCH -A m4776
+#SBATCH -C cpu
+#SBATCH -c 32
+#SBATCH --qos=debug
+#SBATCH -t 00:10:00
+#SBATCH -N 1
+#SBATCH -n 1
 
 
-# Compile the GPU version
+# Compile the CPU version
 make basic_serial
 
 # Run the program (example with some parameters)
