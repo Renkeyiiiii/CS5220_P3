@@ -1,7 +1,7 @@
 #!/bin/bash
-#SBATCH -J sph
-#SBATCH -o sph_%j.out
-#SBATCH -e sph_%j.err
+#SBATCH -J serial
+#SBATCH -o serial_%j.out
+#SBATCH -e serial_%j.err
 #SBATCH -A m4776
 #SBATCH -C cpu
 #SBATCH -c 32
