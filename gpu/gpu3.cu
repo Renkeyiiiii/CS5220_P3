@@ -1,6 +1,7 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <math.h>
+#include <stdio.h>
 #include "../common/common.hpp"
 #include "../common/solver.hpp"
 
@@ -21,15 +22,11 @@ __constant__ double d_dx;
 __constant__ double d_dy;
 __constant__ double d_dt;
 
-// Texture memory for read-only data
-texture<float, 2> h_tex;
-texture<float, 2> u_tex;
-texture<float, 2> v_tex;
-
 // Combined kernel for all derivative calculations
-__global__ void compute_derivatives_kernel(double *dh, double *du, double *dv,
+__global__ void compute_derivatives_kernel(double *h, double *u, double *v,
+                                         double *dh, double *du, double *dv,
                                          int nx, int ny) {
-    __shared__ double sh_h[(32+2)][(32+2)];  // Block size + halo regions
+    __shared__ double sh_h[34][34];  // Block size + halo regions
     
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     int j = blockIdx.y * blockDim.y + threadIdx.y;
@@ -38,21 +35,21 @@ __global__ void compute_derivatives_kernel(double *dh, double *du, double *dv,
     
     // Load central points
     if (i < nx && j < ny) {
-        sh_h[ty][tx] = tex2D(h_tex, i, j);
+        sh_h[ty][tx] = h[i * (ny + 1) + j];
     }
     
     // Load halo regions
     if (threadIdx.x == 0 && i > 0) {
-        sh_h[ty][0] = tex2D(h_tex, i-1, j);
+        sh_h[ty][0] = h[(i-1) * (ny + 1) + j];
     }
     if (threadIdx.x == blockDim.x-1 && i < nx-1) {
-        sh_h[ty][tx+1] = tex2D(h_tex, i+1, j);
+        sh_h[ty][tx+1] = h[(i+1) * (ny + 1) + j];
     }
     if (threadIdx.y == 0 && j > 0) {
-        sh_h[0][tx] = tex2D(h_tex, i, j-1);
+        sh_h[0][tx] = h[i * (ny + 1) + (j-1)];
     }
     if (threadIdx.y == blockDim.y-1 && j < ny-1) {
-        sh_h[ty+1][tx] = tex2D(h_tex, i, j+1);
+        sh_h[ty+1][tx] = h[i * (ny + 1) + (j+1)];
     }
     
     __syncthreads();
@@ -62,14 +59,9 @@ __global__ void compute_derivatives_kernel(double *dh, double *du, double *dv,
         double dh_dx = (sh_h[ty][tx+1] - sh_h[ty][tx]) / d_dx;
         double dh_dy = (sh_h[ty+1][tx] - sh_h[ty][tx]) / d_dy;
         
-        // Read velocity components from texture memory
-        float u_ij = tex2D(u_tex, i, j);
-        float u_ip1j = tex2D(u_tex, i+1, j);
-        float v_ij = tex2D(v_tex, i, j);
-        float v_ijp1 = tex2D(v_tex, i, j+1);
-        
-        double du_dx = (u_ip1j - u_ij) / d_dx;
-        double dv_dy = (v_ijp1 - v_ij) / d_dy;
+        // Calculate derivatives for velocity
+        double du_dx = (u[(i+1) * ny + j] - u[i * ny + j]) / d_dx;
+        double dv_dy = (v[i * (ny + 1) + (j+1)] - v[i * (ny + 1) + j]) / d_dy;
         
         // Calculate all derivatives
         int idx = i * ny + j;
@@ -207,11 +199,6 @@ void init(double *h0, double *u0, double *v0, double length_, double width_,
     cudaMemsetAsync(d_du2, 0, deriv_size, compute_stream);
     cudaMemsetAsync(d_dv2, 0, deriv_size, compute_stream);
     
-    // Bind textures
-    cudaBindTexture2D(NULL, h_tex, d_h, nx + 1, ny + 1, sizeof(float));
-    cudaBindTexture2D(NULL, u_tex, d_u, nx + 2, ny, sizeof(float));
-    cudaBindTexture2D(NULL, v_tex, d_v, nx, ny + 2, sizeof(float));
-    
     // Free pinned memory
     cudaFreeHost(h0_pinned);
     cudaFreeHost(u0_pinned);
@@ -221,12 +208,12 @@ void init(double *h0, double *u0, double *v0, double length_, double width_,
 }
 
 void step() {
-    dim3 block(32, 32);  // Optimal block size for modern GPUs
+    dim3 block(32, 32);  
     dim3 grid((nx + block.x - 1) / block.x, (ny + block.y - 1) / block.y);
     
     // Compute derivatives
     compute_derivatives_kernel<<<grid, block, 0, compute_stream>>>(
-        d_dh, d_du, d_dv, nx, ny);
+        d_h, d_u, d_v, d_dh, d_du, d_dv, nx, ny);
     
     // Set multistep coefficients
     double a1, a2 = 0.0, a3 = 0.0;
@@ -259,6 +246,8 @@ void step() {
     tmp = d_du2; d_du2 = d_du1; d_du1 = d_du; d_du = tmp;
     tmp = d_dv2; d_dv2 = d_dv1; d_dv1 = d_dv; d_dv = tmp;
     
+    cudaStreamSynchronize(compute_stream);
+    
     t++;
 }
 
@@ -282,11 +271,6 @@ void transfer(double *h_host) {
 }
 
 void free_memory() {
-    // Unbind textures
-    cudaUnbindTexture(h_tex);
-    cudaUnbindTexture(u_tex);
-    cudaUnbindTexture(v_tex);
-    
     // Free device memory
     cudaFree(d_h);
     cudaFree(d_u);
@@ -307,65 +291,4 @@ void free_memory() {
     
     // Reset device for clean exit
     cudaDeviceReset();
-}
-
-// Error checking helper function
-inline void checkCuda(cudaError_t result, const char *func, const char *file, const int line) {
-    if (result != cudaSuccess) {
-        fprintf(stderr, "CUDA error at %s:%d code=%d(%s) \"%s\" \n",
-                file, line, static_cast<unsigned int>(result), cudaGetErrorString(result), func);
-        cudaDeviceReset();
-        exit(EXIT_FAILURE);
-    }
-}
-
-#define checkCudaErrors(val) checkCuda((val), #val, __FILE__, __LINE__)
-
-// Optional: Add these error checks to main functions
-void step() {
-    dim3 block(32, 32);
-    dim3 grid((nx + block.x - 1) / block.x, (ny + block.y - 1) / block.y);
-    
-    // Compute derivatives with error checking
-    compute_derivatives_kernel<<<grid, block, 0, compute_stream>>>(
-        d_dh, d_du, d_dv, nx, ny);
-    checkCudaErrors(cudaGetLastError());
-    
-    // Set multistep coefficients
-    double a1, a2 = 0.0, a3 = 0.0;
-    if (t == 0) {
-        a1 = 1.0;
-    } else if (t == 1) {
-        a1 = 3.0 / 2.0;
-        a2 = -1.0 / 2.0;
-    } else {
-        a1 = 23.0 / 12.0;
-        a2 = -16.0 / 12.0;
-        a3 = 5.0 / 12.0;
-    }
-    
-    // Update fields with error checking
-    multistep_kernel<<<grid, block, 0, compute_stream>>>(
-        d_h, d_u, d_v, d_dh, d_du, d_dv,
-        d_dh1, d_du1, d_dv1, d_dh2, d_du2, d_dv2,
-        nx, ny, a1, a2, a3);
-    checkCudaErrors(cudaGetLastError());
-    
-    // Handle boundaries with error checking
-    dim3 boundary_block(256);
-    dim3 boundary_grid((max(nx, ny) + boundary_block.x - 1) / boundary_block.x);
-    compute_boundaries_kernel<<<boundary_grid, boundary_block, 0, compute_stream>>>(
-        d_h, d_u, d_v, nx, ny);
-    checkCudaErrors(cudaGetLastError());
-    
-    // Swap derivative buffers
-    double *tmp;
-    tmp = d_dh2; d_dh2 = d_dh1; d_dh1 = d_dh; d_dh = tmp;
-    tmp = d_du2; d_du2 = d_du1; d_du1 = d_du; d_du = tmp;
-    tmp = d_dv2; d_dv2 = d_dv1; d_dv1 = d_dv; d_dv = tmp;
-    
-    // Synchronize stream to ensure all operations are complete
-    checkCudaErrors(cudaStreamSynchronize(compute_stream));
-    
-    t++;
 }
