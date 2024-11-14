@@ -3,6 +3,7 @@
 #include <math.h>
 #include "../common/common.hpp"
 #include "../common/solver.hpp"
+#include <stdio.h>
 
 
 // Global variables for device memory
@@ -19,32 +20,20 @@ int t = 0;
 __global__ void compute_ghost_kernel(double *h, int nx, int ny)
 {
     int index = blockIdx.x * blockDim.x + threadIdx.x;
-    int stride = blockDim.x * gridDim.x;
+    // int stride = blockDim.x * gridDim.x;
+    int i = index;
 
-    for (int i = index; i < ny; i += stride)
+    if (index < ny)
     {
-        h(nx, i) = h(0, i);
+
+            h(nx, i) = h(0, i);
+
     }
-
-    for (int i = index; i < nx; i += stride)
+    else if (index < nx + ny)
     {
-        h(i, ny) = h(i, 0);
-    }
-}
 
-__global__ void compute_ghost_horizontal_kernel(double *h, int nx, int ny)
-{
-    int index = blockIdx.x * blockDim.x + threadIdx.x;
-    int stride = blockDim.x * gridDim.x;
+            h(i-ny, ny) = h(i-ny, 0);
 
-    for (int i = index; i < ny; i += stride)
-    {
-        h(nx, i) = h(0, i);
-    }
-
-    for (int i = index; i < nx; i += stride)
-    {
-        h(i, ny) = h(i, 0);
     }
 }
 
@@ -101,27 +90,14 @@ __global__ void multistep_kernel(double *h, double *u, double *v,
                                 double *dh1, double *du1, double *dv1,
                                 double *dh2, double *du2, double *dv2,
                                 int nx, int ny, double dt,
-                                double a1, double a2, double a3) {
-    // int i = blockIdx.x * blockDim.x + threadIdx.x;
-    // int j = blockIdx.y * blockDim.y + threadIdx.y;
-    
-    // if (i < nx && j < ny) {
-    //     // Update height field
-    //     h(i, j) += (a1 * dh(i, j) + a2 * dh1(i, j) + a3 * dh2(i, j)) * dt;
-        
-    //     // Update velocity fields
-    //     if (i < nx-1) {
-    //         u(i+1, j) += (a1 * du(i, j) + a2 * du1(i, j) + a3 * du2(i, j)) * dt;
-    //     }
-    //     if (j < ny-1) {
-    //         v(i, j+1) += (a1 * dv(i, j) + a2 * dv1(i, j) + a3 * dv2(i, j)) * dt;
-    //     }
-    // }
+                                double a1, double a2, double a3) 
+{
 
     int index_col = blockIdx.x * blockDim.x + threadIdx.x;
     int index_row = blockIdx.y * blockDim.y + threadIdx.y;
     int stride_col = blockDim.x * gridDim.x;
     int stride_row = blockDim.y * gridDim.y;
+    
     for (int i = index_col; i < nx; i += stride_col)
     {
         for (int j = index_row; j < ny; j += stride_row)
@@ -133,32 +109,84 @@ __global__ void multistep_kernel(double *h, double *u, double *v,
     }
 }
 
-__global__ void compute_boundaries_kernel(double *h, double *u, double *v, int nx, int ny) {
-    // int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    
-    // // Horizontal boundaries
-    // if (idx < ny) {
-    //     h(nx, idx) = h(0, idx);
-    //     u(0, idx) = u(nx, idx);
-    // }
-    
-    // // Vertical boundaries
-    // if (idx < nx) {
-    //     h(idx, ny) = h(idx, 0);
-    //     v(idx, 0) = v(idx, ny);
-    // }
 
-    int index = blockIdx.x * blockDim.x + threadIdx.x;
-    int stride = blockDim.x * gridDim.x;
+// We are going to be doing four things here:
+// 1.compute_dh
+// 2.compute_du
+// 3.compute_dv
+// 4.multistep
+__global__ void new_kernel(double *h, double *u, double *v,
+                                double *dh, double *du, double *dv,
+                                double *dh1, double *du1, double *dv1,
+                                double *dh2, double *du2, double *dv2,
+                                int nx, int ny, double dt,
+                                double H, double g, double dx, double dy,
+                                int t) 
+{ 
+    int index_col = blockIdx.x * blockDim.x + threadIdx.x;
+    int index_row = blockIdx.y * blockDim.y + threadIdx.y;
+    int i = index_col;
+    int j = index_row;
 
-    for (int i = index; i < ny; i += stride)
+    if(i < nx && j < ny)
     {
-        u(0, i) = u(nx, i);
+        dh(i, j) = -H * (du_dx(i, j) + dv_dy(i, j));
+        du(i, j) = -g * dh_dx(i, j);
+        dv(i, j) = -g * dh_dy(i, j);
     }
 
-    for (int i = index; i < nx; i += stride)
+    __syncthreads();
+    // test
+    if (t == 100 && i == 0 & j == 0)
     {
-        v(i, 0) = v(i, ny);
+        printf("dh(0,0) = %lf\n", dh(0,0));
+        printf("du(0,0) = %lf\n", du(0,0));
+        printf("dv(0,0) = %lf\n", dv(0,0));
+        printf("du_dx(0,0) = %lf\n", du_dx(0,0));
+        printf("dv_dy(0,0) = %lf\n", dv_dy(0,0));
+        printf("dh_dx(0,0) = %lf\n", dh_dx(0,0));
+        printf("dh_dy(0,0) = %lf\n", dh_dy(0,0));
+        printf("h(0,0) = %lf h(1,0) = %lf h(0,1) = %lf\n", h(0,0), h(1,0), h(0,1));
+        printf("u(0,0) = %lf u(1,0) = %lf\n", u(0,0), u(1,0));
+        printf("v(0,0) = %lf v(0,1) = %lf\n", v(0,0), v(0,1));
+    }
+    __syncthreads();
+    double a1, a2 = 0.0, a3 = 0.0;
+    if (t == 0) {
+        a1 = 1.0;
+    } else if (t == 1) {
+        a1 = 3.0 / 2.0;
+        a2 = -1.0 / 2.0;
+    } else {
+        a1 = 23.0 / 12.0;
+        a2 = -16.0 / 12.0;
+        a3 = 5.0 / 12.0;
+    } 
+
+    if(i < nx && j < ny)
+    {
+        h(i, j) += (a1 * dh(i, j) + a2 * dh1(i, j) + a3 * dh2(i, j)) * dt;
+        u(i + 1, j) += (a1 * du(i, j) + a2 * du1(i, j) + a3 * du2(i, j)) * dt;
+        v(i, j + 1) += (a1 * dv(i, j) + a2 * dv1(i, j) + a3 * dv2(i, j)) * dt;
+    }
+}
+
+__global__ void compute_boundaries_kernel(double *h, double *u, double *v, int nx, int ny) {
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+    // int stride = blockDim.x * gridDim.x;
+    int i = index;
+
+    if (index < ny)
+    {
+
+            u(0, i) = u(nx, i);
+
+    }
+    else if (index < nx + ny)
+    {
+
+            v(i-ny, 0) = v(i-ny, ny);
+
     }
 }
 
@@ -213,35 +241,45 @@ void step() {
     dim3 grid((nx + block.x - 1) / block.x, (ny + block.y - 1) / block.y);
 
     dim3 boundary_block(256);
-    dim3 boundary_grid((max(nx, ny) + boundary_block.x - 1) / boundary_block.x);
+    dim3 boundary_grid(((nx + ny) + boundary_block.x - 1) / boundary_block.x);
 
     compute_ghost_kernel<<<boundary_grid, boundary_block>>>(d_h, nx, ny);
-    
+    cudaDeviceSynchronize();
     // Compute derivatives
-    compute_dh_kernel<<<grid, block>>>(d_h, d_u, d_v, d_dh, nx, ny, H, dx, dy);
-    compute_du_kernel<<<grid, block>>>(d_h, d_du, nx, ny, g, dx);
-    compute_dv_kernel<<<grid, block>>>(d_h, d_dv, nx, ny, g, dy);
+
+    // compute_dh_kernel<<<grid, block>>>(d_h, d_u, d_v, d_dh, nx, ny, H, dx, dy);
+    // cudaDeviceSynchronize();
+    // compute_du_kernel<<<grid, block>>>(d_h, d_du, nx, ny, g, dx);
+    // cudaDeviceSynchronize();
+    // compute_dv_kernel<<<grid, block>>>(d_h, d_dv, nx, ny, g, dy);
+    // cudaDeviceSynchronize();
+
+    new_kernel<<<grid, block>>>(d_h, d_u, d_v, d_dh, d_du, d_dv,
+                        d_dh1, d_du1, d_dv1, d_dh2, d_du2, d_dv2,
+                        nx, ny, dt, H, g, dx, dy, t);
     
     // Set multistep coefficients
-    double a1, a2 = 0.0, a3 = 0.0;
-    if (t == 0) {
-        a1 = 1.0;
-    } else if (t == 1) {
-        a1 = 3.0 / 2.0;
-        a2 = -1.0 / 2.0;
-    } else {
-        a1 = 23.0 / 12.0;
-        a2 = -16.0 / 12.0;
-        a3 = 5.0 / 12.0;
-    }
+    // double a1, a2 = 0.0, a3 = 0.0;
+    // if (t == 0) {
+    //     a1 = 1.0;
+    // } else if (t == 1) {
+    //     a1 = 3.0 / 2.0;
+    //     a2 = -1.0 / 2.0;
+    // } else {
+    //     a1 = 23.0 / 12.0;
+    //     a2 = -16.0 / 12.0;
+    //     a3 = 5.0 / 12.0;
+    // }
     
     // Update fields
-    multistep_kernel<<<grid, block>>>(d_h, d_u, d_v, d_dh, d_du, d_dv,
-                                     d_dh1, d_du1, d_dv1, d_dh2, d_du2, d_dv2,
-                                     nx, ny, dt, a1, a2, a3);
-    
+    // multistep_kernel<<<grid, block>>>(d_h, d_u, d_v, d_dh, d_du, d_dv,
+    //                                  d_dh1, d_du1, d_dv1, d_dh2, d_du2, d_dv2,
+    //                                  nx, ny, dt, a1, a2, a3);
+    // cudaDeviceSynchronize();
     // Handle boundaries
     compute_boundaries_kernel<<<boundary_grid, boundary_block>>>(d_h, d_u, d_v, nx, ny);
+
+    cudaDeviceSynchronize();
     
     // Swap derivative buffers
     double *tmp;
